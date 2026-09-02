@@ -90,9 +90,29 @@
   .conv-preview { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   /* Chat room */
-  #chat-view { display: none; flex-direction: column; height: 100%; }
+  #chat-view { display: none; flex-direction: column; height: 100%; position: relative; }
   #chat-view.active { display: flex; }
   #home-view.hidden { display: none; }
+
+  #translate-overlay {
+    position: absolute; inset: 0; z-index: 5; display: none;
+    flex-direction: column; align-items: center; justify-content: center; gap: 14px;
+    background: var(--bg);
+  }
+  #translate-overlay.active { display: flex; }
+  #translate-overlay .spinner-lg {
+    width: 32px; height: 32px; border: 3px solid var(--text-secondary); border-top-color: var(--accent);
+    border-radius: 50%; animation: spin 0.8s linear infinite;
+  }
+  #translate-overlay .progress-text { font-size: 15px; font-weight: 600; }
+
+  #btn-scroll-top {
+    position: absolute; right: 16px; bottom: 20px; z-index: 4;
+    width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); font-size: 16px; cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15); display: none; align-items: center; justify-content: center;
+  }
+  #chat-view.active #btn-scroll-top { display: flex; }
 
   /* Engine picker */
   #engine-view { display: none; flex-direction: column; height: 100%; overflow-y: auto; padding: 16px; gap: 16px; }
@@ -193,6 +213,11 @@
     </div>
     <div id="chat-view">
       <div id="chat-messages"></div>
+      <button id="btn-scroll-top" title="맨 위로">⬆</button>
+      <div id="translate-overlay">
+        <div class="spinner-lg"></div>
+        <div class="progress-text" id="translate-progress-text">번역 중... 0%</div>
+      </div>
     </div>
     <div id="engine-view">
       <div class="engine-card" data-engine="gemini">
@@ -256,6 +281,11 @@
     <div class="field">
       <div id="usage-display" class="hint" style="margin-top:0;"></div>
     </div>
+    <div class="field" style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+      <input type="checkbox" id="input-notify-done" style="width:auto;" />
+      <label for="input-notify-done" style="margin:0; font-size:14px;">번역 완료 시 알림받기</label>
+    </div>
+    <div class="hint" style="margin-top:0; margin-bottom:16px;">브라우저 알림 권한이 필요합니다. iOS Safari 등 일부 브라우저는 지원하지 않을 수 있습니다.</div>
     <div class="save-toast" id="save-toast">저장되었습니다.</div>
     <div class="modal-actions">
       <button class="btn btn-secondary" id="btn-settings-close">닫기</button>
@@ -294,6 +324,7 @@ const API_KEY_KEY = "lt_api_key";
 const MY_NAME_KEY = "lt_my_name";
 const USAGE_KEY = "lt_usage_v1";
 const ENGINE_KEY = "lt_engine";
+const NOTIFY_KEY = "lt_notify_done";
 const ENGINE_LABELS = { gemini: "Gemini (AI 번역)", mymemory: "MyMemory (빠른 번역)" };
 
 function getEngine() {
@@ -633,6 +664,8 @@ async function translateBatch(originalTexts, contextTexts) {
 // ---------- MyMemory (전용 번역 API, 빠르지만 문맥/이름 보존 없음) ----------
 // MyMemory는 소스 언어 자동감지를 지원하지 않아, 문자 구성 비율로 대략 추정한다(완벽하지 않음).
 function detectSourceLangForMyMemory(text) {
+  // 베트남어 성조 표기(đ/Đ, Latin Extended Additional)는 다른 언어에 안 나오는 강한 신호라 비율 기준이 필요 없음.
+  if (/[đĐẠ-ỹ]/.test(text)) return "vi";
   const letters = text.replace(/[^\p{L}]/gu, "") || text;
   const kana = text.match(/[぀-ヿ]/g);
   if (kana && kana.length / letters.length >= 0.15) return "ja";
@@ -749,14 +782,19 @@ async function handleFileImport(file) {
 }
 
 // 선택된 엔진에 따라 conversation의 "translating" 상태 메시지들을 번역한다.
+// 다 끝날 때까지 채팅 목록 대신 로딩 오버레이(진행률 %)를 보여준다 — 어차피 전부 끝나야
+// 위에서부터 편하게 읽을 수 있으므로, 중간중간 부분적으로 노출하지 않는다.
 async function runTranslationPass(conversation) {
   const translatable = conversation.messages.filter((m) => m.status === "translating");
   const total = translatable.length;
   let done = 0;
 
+  if (total > 0 && state.currentConversationId === conversation.id) showTranslateOverlay(0);
+
   const updateProgress = () => {
     if (state.currentConversationId === conversation.id) {
-      headerTitleEl.textContent = total > 0 ? `번역 중... (${done}/${total})` : conversation.title;
+      const pct = total > 0 ? Math.round((done / total) * 100) : 100;
+      showTranslateOverlay(pct);
     }
     renderChatMessages();
   };
@@ -809,7 +847,34 @@ async function runTranslationPass(conversation) {
 
   if (state.currentConversationId === conversation.id) {
     headerTitleEl.textContent = conversation.title;
+    hideTranslateOverlay();
   }
+  if (total > 0) notifyTranslationDone(conversation);
+}
+
+// ---------- translate overlay / scroll-to-top ----------
+const translateOverlayEl = document.getElementById("translate-overlay");
+const translateProgressTextEl = document.getElementById("translate-progress-text");
+function showTranslateOverlay(pct) {
+  translateProgressTextEl.textContent = `번역 중... ${pct}%`;
+  translateOverlayEl.classList.add("active");
+}
+function hideTranslateOverlay() {
+  translateOverlayEl.classList.remove("active");
+}
+
+document.getElementById("btn-scroll-top").addEventListener("click", () => {
+  chatMessagesEl.scrollTop = 0;
+});
+
+// ---------- 번역 완료 알림 ----------
+function notifyTranslationDone(conversation) {
+  if (localStorage.getItem(NOTIFY_KEY) !== "1") return;
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  try {
+    new Notification("번역 완료", { body: `${conversation.title} 번역이 끝났습니다.` });
+  } catch (e) { /* 일부 브라우저는 페이지가 포커스 상태면 조용히 실패할 수 있음 */ }
+  if (navigator.vibrate) navigator.vibrate(200);
 }
 
 async function retranslateMessage(conversationId, messageId) {
@@ -963,6 +1028,7 @@ function openConversation(id) {
   engineView.classList.remove("active");
   btnBack.style.display = "inline-block";
   btnToggleOriginal.style.display = "inline-block";
+  hideTranslateOverlay(); // 다른 대화방을 보다가 들어온 경우, 이전 대화방의 진행 중 오버레이가 남아있지 않도록
   renderChatMessages();
 }
 
@@ -1005,11 +1071,13 @@ document.querySelectorAll(".select-engine-btn").forEach((btn) => {
 const settingsBackdrop = document.getElementById("settings-backdrop");
 const inputApiKey = document.getElementById("input-api-key");
 const inputMyName = document.getElementById("input-my-name");
+const inputNotifyDone = document.getElementById("input-notify-done");
 const saveToast = document.getElementById("save-toast");
 
 function openSettings() {
   inputApiKey.value = localStorage.getItem(API_KEY_KEY) || "";
   inputMyName.value = localStorage.getItem(MY_NAME_KEY) || "";
+  inputNotifyDone.checked = localStorage.getItem(NOTIFY_KEY) === "1";
   saveToast.style.display = "none";
   updateUsageDisplay();
   document.getElementById("engine-current-hint").textContent = `현재 선택된 엔진: ${ENGINE_LABELS[getEngine()]}`;
@@ -1022,7 +1090,15 @@ document.getElementById("btn-settings-close").addEventListener("click", closeSet
 document.getElementById("btn-settings-save").addEventListener("click", () => {
   localStorage.setItem(API_KEY_KEY, inputApiKey.value.trim());
   localStorage.setItem(MY_NAME_KEY, inputMyName.value.trim());
+  localStorage.setItem(NOTIFY_KEY, inputNotifyDone.checked ? "1" : "0");
   saveToast.style.display = "block";
+});
+inputNotifyDone.addEventListener("change", () => {
+  if (inputNotifyDone.checked && "Notification" in window && Notification.permission === "default") {
+    Notification.requestPermission().then((perm) => {
+      if (perm !== "granted") inputNotifyDone.checked = false;
+    });
+  }
 });
 settingsBackdrop.addEventListener("click", (e) => {
   if (e.target === settingsBackdrop) closeSettings();
