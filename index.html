@@ -190,7 +190,8 @@
       <input type="password" id="input-api-key" placeholder="AIza..." autocomplete="off" />
       <div class="hint">
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>에서
-        구글 계정으로 무료 발급 (카드 등록 불필요, Flash 모델 기준 하루 250회 · 분당 약 10회).
+        구글 계정으로 무료 발급 (카드 등록 불필요, Flash 모델 기준 하루 250회 API 요청). 메시지를 여러 개씩 묶어서
+        보내기 때문에 개인 대화방 하나를 가져올 때 실제로 쓰는 요청 횟수는 훨씬 적습니다.
         이 기기의 브라우저에만 저장됩니다 (localStorage). 다른 사람과 공유되는 페이지가 아니어야 안전합니다.
       </div>
     </div>
@@ -213,11 +214,24 @@
 <script>
 const SYSTEM_PROMPT = "당신은 채팅 메시지를 자연스러운 한국어로 번역하는 도우미입니다. " +
   "직전 대화 맥락을 참고해 대명사와 줄임말을 자연스럽게 해석하세요. " +
+  "사람 이름, @멘션, 태그된 이름은 번역하지 말고 원문 그대로 유지하세요. " +
   "번역문만 출력하고 설명을 덧붙이지 마세요.";
+const BATCH_SYSTEM_PROMPT = SYSTEM_PROMPT +
+  " 여러 메시지가 번호 순서대로 주어지면, 같은 순서와 개수를 유지한 문자열 배열(JSON)로만 응답하세요.";
 const CONTEXT_LIMIT = 2;
 const GEMINI_MODEL = "gemini-2.5-flash";
 const DAILY_REQUEST_LIMIT = 250; // Gemini 무료 티어 (Flash 모델) 일일 요청 한도 (2025-12 축소 반영)
 const MIN_REQUEST_GAP_MS = 6500; // 분당 약 9.2회로 제한 (무료 티어 분당 10회 한도보다 여유있게)
+
+// ---------- batch translation sizing ----------
+// 요청 횟수(하루 한도)는 배치를 크게 묶을수록 문제가 안 되므로, 남는 제약인
+// "응답 토큰 한도"와 "배치 실패 시 재시도 범위"만 안전선 안에서 관리한다.
+const MAX_BATCH_OUTPUT_TOKENS = 6000;
+const MAX_BATCH_MESSAGES = 100;
+function estimateTokens(text) {
+  // 한국어/일본어 등 멀티바이트 텍스트는 토큰 효율이 낮은 편이라 보수적으로 글자당 1토큰으로 추정.
+  return Math.ceil(text.length * 1.0) + 5; // +5: JSON 배열 원소 오버헤드(따옴표, 콤마 등)
+}
 
 const DATA_KEY = "lt_data_v1";
 const CACHE_KEY = "lt_cache_v1";
@@ -254,7 +268,7 @@ function updateUsageDisplay() {
   const el = document.getElementById("usage-display");
   if (!el) return;
   const usage = getUsage();
-  el.textContent = `오늘 API 사용량: ${usage.count} / ${DAILY_REQUEST_LIMIT} (태평양시간 자정 리셋)`;
+  el.textContent = `오늘 API 요청 사용량: ${usage.count} / ${DAILY_REQUEST_LIMIT}회 (태평양시간 자정 리셋)`;
   el.classList.toggle("usage-warning", usage.count >= DAILY_REQUEST_LIMIT * 0.8);
 }
 
@@ -394,6 +408,37 @@ function parseLineExport(rawText) {
 // ---------- translation ----------
 function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
 
+// 한글 음절 비율이 높으면 이미 한국어로 보고 API 호출 없이 원문을 그대로 쓴다.
+function isAlreadyKorean(text) {
+  const letters = text.replace(/[^\p{L}]/gu, "");
+  if (letters.length < 2) return false; // 너무 짧으면(이모지/기호 위주) 판단하지 않음
+  const hangul = letters.match(/[가-힣ㄱ-ㅎㅏ-ㅣ]/g); // 완성형 음절 + 자모(ㅋㅋㅋ, ㅇㅇ 등)
+  const hangulCount = hangul ? hangul.length : 0;
+  return hangulCount / letters.length >= 0.6;
+}
+
+// texts(원문 배열)를 토큰 예산/개수 상한 안에서 순서를 유지한 채 배치로 나눈다.
+// items: [{ text, ... }] 형태의 배열을 받아 같은 형태의 하위 배열들을 반환한다.
+function chunkForBatch(items, getText) {
+  const batches = [];
+  let current = [];
+  let currentTokens = 0;
+  for (const item of items) {
+    const tokens = estimateTokens(getText(item));
+    const wouldExceed = current.length > 0 &&
+      (currentTokens + tokens > MAX_BATCH_OUTPUT_TOKENS || current.length >= MAX_BATCH_MESSAGES);
+    if (wouldExceed) {
+      batches.push(current);
+      current = [];
+      currentTokens = 0;
+    }
+    current.push(item);
+    currentTokens += tokens;
+  }
+  if (current.length > 0) batches.push(current);
+  return batches;
+}
+
 async function fetchWithRetry(url, options) {
   let serverAttempt = 0;
   let networkAttempt = 0;
@@ -461,6 +506,64 @@ async function translateText(originalText, contextTexts, useCache) {
   return text;
 }
 
+// 여러 원문을 한 번의 요청으로 번역해 같은 순서의 문자열 배열로 돌려준다.
+// 실패(네트워크/HTTP 오류, JSON 파싱 실패, 개수 불일치)는 모두 예외로 던져 배치 전체를 실패로 처리한다 —
+// 일부만 성공한 것처럼 추측해 메시지와 번역문을 잘못 매칭하는 것을 방지하기 위함.
+async function translateBatch(originalTexts, contextTexts) {
+  const apiKey = localStorage.getItem(API_KEY_KEY);
+  if (!apiKey) throw new Error("설정에서 Gemini API 키를 먼저 입력해주세요.");
+
+  const contextBlock = contextTexts.length === 0
+    ? ""
+    : `직전 메시지:\n${contextTexts.map((t) => `(상대방) ${t}`).join("\n")}\n\n`;
+  const prompt = `${contextBlock}다음은 번역할 메시지 ${originalTexts.length}개를 순서대로 담은 JSON 배열입니다. ` +
+    `같은 개수, 같은 순서의 한국어 번역 문자열 배열로만 응답하세요.\n${JSON.stringify(originalTexts)}`;
+
+  const estimatedTokens = originalTexts.reduce((sum, t) => sum + estimateTokens(t), 0);
+  const maxOutputTokens = Math.min(8192, Math.max(1024, Math.ceil(estimatedTokens * 1.5) + 200));
+
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  await waitForRateLimitSlot();
+  incrementUsage();
+  const response = await fetchWithRetry(endpoint, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      systemInstruction: { parts: [{ text: BATCH_SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        maxOutputTokens,
+        responseMimeType: "application/json",
+        responseSchema: { type: "ARRAY", items: { type: "STRING" } }
+      }
+    })
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    throw new Error(`배치 번역 요청 실패 (HTTP ${response.status}) ${errBody.slice(0, 150)}`);
+  }
+
+  const json = await response.json();
+  const parts = json.candidates && json.candidates[0] && json.candidates[0].content
+    ? json.candidates[0].content.parts
+    : null;
+  const rawText = parts && parts.map((p) => p.text || "").join("").trim();
+  if (!rawText) throw new Error("배치 번역 결과가 비어 있습니다 (안전 필터에 걸렸을 수 있음).");
+
+  let result;
+  try {
+    const cleaned = rawText.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```\s*$/i, "");
+    result = JSON.parse(cleaned);
+  } catch (e) {
+    throw new Error("배치 번역 응답을 JSON으로 해석하지 못했습니다.");
+  }
+  if (!Array.isArray(result) || result.length !== originalTexts.length) {
+    throw new Error(`배치 번역 개수가 맞지 않습니다 (요청 ${originalTexts.length}, 응답 ${Array.isArray(result) ? result.length : "?"}).`);
+  }
+  return result;
+}
+
 // ---------- import ----------
 async function handleFileImport(file) {
   const rawText = await readFileSmart(file);
@@ -470,14 +573,16 @@ async function handleFileImport(file) {
     return;
   }
 
+  // 이미 캐시가 있거나 이미 한국어인 메시지는 API 호출이 필요 없어 사전 안내에서 제외한다.
+  const needsApiCall = parsed.filter((p) => !isAlreadyKorean(p.text) && !getCached(p.text));
+  const estimatedBatches = chunkForBatch(needsApiCall, (p) => p.text).length;
   const remaining = remainingQuota();
-  const estimatedMinutes = Math.ceil((parsed.length * MIN_REQUEST_GAP_MS) / 60000);
-  if (parsed.length > 10) {
-    const overLimitNote = parsed.length > remaining
-      ? `\n오늘 남은 무료 API 요청은 약 ${remaining}개라 일부는 "번역 실패"로 표시되고, 태평양시간 자정 리셋 후 다시 시도할 수 있습니다.`
+  if (estimatedBatches > 1) {
+    const overLimitNote = estimatedBatches > remaining
+      ? `\n오늘 남은 무료 API 요청은 약 ${remaining}회라 일부는 "번역 실패"로 표시될 수 있고, 태평양시간 자정 리셋 후 다시 시도할 수 있습니다.`
       : "";
     const proceed = confirm(
-      `이 파일은 메시지 ${parsed.length}개예요. 무료 API 속도 제한 때문에 천천히(약 ${estimatedMinutes}분) 번역됩니다.${overLimitNote}\n` +
+      `이 파일은 메시지 ${parsed.length}개예요. 여러 메시지를 묶어서 보내 API 요청 약 ${estimatedBatches}회로 번역됩니다.${overLimitNote}\n` +
       `계속하시겠습니까?`
     );
     if (!proceed) return;
@@ -488,15 +593,27 @@ async function handleFileImport(file) {
     id: crypto.randomUUID(),
     title: file.name.replace(/\.txt$/i, ""),
     importedAt: Date.now(),
-    messages: parsed.map((p) => ({
-      id: crypto.randomUUID(),
-      sender: p.sender,
-      isMine: !!myName && p.sender === myName,
-      originalText: p.text,
-      translatedText: null,
-      status: "translating",
-      timestamp: p.timestamp
-    }))
+    messages: parsed.map((p) => {
+      const cached = getCached(p.text);
+      const alreadyKorean = isAlreadyKorean(p.text);
+      const base = {
+        id: crypto.randomUUID(),
+        sender: p.sender,
+        isMine: !!myName && p.sender === myName,
+        originalText: p.text,
+        translatedText: null,
+        status: "translating",
+        timestamp: p.timestamp
+      };
+      if (alreadyKorean) {
+        base.status = "done";
+        base.skipTranslation = true;
+      } else if (cached) {
+        base.status = "done";
+        base.translatedText = cached;
+      }
+      return base;
+    })
   };
 
   state.data.conversations.unshift(conversation);
@@ -504,24 +621,38 @@ async function handleFileImport(file) {
   renderConversationList();
   openConversation(conversation.id);
 
-  const recent = [];
-  const total = conversation.messages.length;
+  const translatable = conversation.messages.filter((m) => m.status === "translating");
+  const batches = chunkForBatch(translatable, (m) => m.originalText);
+  const total = translatable.length;
   let done = 0;
-  for (const message of conversation.messages) {
+
+  for (const batch of batches) {
     if (state.currentConversationId === conversation.id) {
       headerTitleEl.textContent = `번역 중... (${done}/${total})`;
     }
     renderChatMessages();
+
+    const firstIdx = conversation.messages.indexOf(batch[0]);
+    const context = conversation.messages
+      .slice(Math.max(0, firstIdx - CONTEXT_LIMIT), firstIdx)
+      .map((m) => m.originalText);
+
     try {
-      const translated = await translateText(message.originalText, recent.slice(-CONTEXT_LIMIT), true);
-      message.translatedText = translated;
-      message.status = "done";
+      const translations = await translateBatch(batch.map((m) => m.originalText), context);
+      batch.forEach((m, idx) => {
+        m.translatedText = translations[idx];
+        m.status = "done";
+        setCached(m.originalText, translations[idx]);
+      });
     } catch (err) {
-      message.status = "failed";
-      message.error = String(err.message || err);
+      const message = String(err.message || err);
+      batch.forEach((m) => {
+        m.status = "failed";
+        m.error = message;
+      });
     }
-    done++;
-    recent.push(message.originalText);
+
+    done += batch.length;
     saveData();
     renderChatMessages();
   }
@@ -537,6 +668,7 @@ async function retranslateMessage(conversationId, messageId) {
   if (!message) return;
 
   message.status = "translating";
+  message.skipTranslation = false;
   renderChatMessages();
   try {
     const translated = await translateText(message.originalText, [], false);
@@ -612,7 +744,9 @@ function renderChatMessages() {
       bubble.appendChild(original);
     }
 
-    if (message.status === "translating") {
+    if (message.skipTranslation) {
+      // 이미 한국어인 메시지 — 원문만 보여주고 번역 행은 생략(중복 방지).
+    } else if (message.status === "translating") {
       const row2 = document.createElement("div");
       row2.className = "status-row";
       row2.innerHTML = `<span class="spinner"></span><span>번역 중...</span>`;
