@@ -93,6 +93,23 @@
   #chat-view { display: none; flex-direction: column; height: 100%; }
   #chat-view.active { display: flex; }
   #home-view.hidden { display: none; }
+
+  /* Engine picker */
+  #engine-view { display: none; flex-direction: column; height: 100%; overflow-y: auto; padding: 16px; gap: 16px; }
+  #engine-view.active { display: flex; }
+  .engine-card { border: 2px solid var(--border); border-radius: 14px; padding: 16px; background: var(--surface); position: relative; }
+  .engine-card.selected { border-color: var(--accent); }
+  .engine-card h3 { margin: 0 0 4px; font-size: 16px; }
+  .engine-badge {
+    position: absolute; top: 14px; right: 14px; font-size: 11px; font-weight: 600;
+    color: var(--accent); background: var(--accent-bubble); padding: 3px 8px; border-radius: 999px; display: none;
+  }
+  .engine-card.selected .engine-badge { display: inline-block; }
+  .engine-list { margin: 8px 0; padding-left: 18px; font-size: 13px; line-height: 1.6; color: var(--text-secondary); }
+  .engine-list.pros li::marker { color: #16a34a; }
+  .engine-list.cons li::marker { color: var(--danger); }
+  .engine-card .select-engine-btn { width: 100%; margin-top: 8px; padding: 10px; border-radius: 10px; border: none; font-size: 14px; font-weight: 600; cursor: pointer; background: var(--surface-alt); color: var(--text); }
+  .engine-card.selected .select-engine-btn { background: var(--accent); color: white; }
   #chat-messages { flex: 1; overflow-y: auto; padding: 10px 10px 20px; display: flex; flex-direction: column; gap: 10px; }
   .bubble-row { display: flex; }
   .bubble-row.mine { justify-content: flex-end; }
@@ -177,6 +194,38 @@
     <div id="chat-view">
       <div id="chat-messages"></div>
     </div>
+    <div id="engine-view">
+      <div class="engine-card" data-engine="gemini">
+        <div class="engine-badge">현재 선택됨</div>
+        <h3>Gemini (AI 번역)</h3>
+        <ul class="engine-list pros">
+          <li>대화 맥락을 반영해 자연스럽게 번역</li>
+          <li>사람 이름·@멘션은 번역하지 않음</li>
+          <li>메시지 길이 제한 없음</li>
+        </ul>
+        <ul class="engine-list cons">
+          <li>응답이 느림(AI가 답을 생성하는 방식)</li>
+          <li>Google API 키 발급 필요</li>
+          <li>무료 한도 있음(하루 약 250회 API 요청, 여러 메시지를 묶어 보내 실제로는 넉넉함)</li>
+        </ul>
+        <button class="select-engine-btn" data-engine="gemini">선택</button>
+      </div>
+      <div class="engine-card" data-engine="mymemory">
+        <div class="engine-badge">현재 선택됨</div>
+        <h3>MyMemory (빠른 번역)</h3>
+        <ul class="engine-list pros">
+          <li>훨씬 빠름(전용 번역 API)</li>
+          <li>API 키·가입 불필요, 바로 사용 가능</li>
+        </ul>
+        <ul class="engine-list cons">
+          <li>메시지당 500자 제한(넘으면 번역 실패)</li>
+          <li>언어를 자동감지하지 못해 문자 구성으로 추정(완벽하지 않음)</li>
+          <li>대화 맥락 반영 안 됨, 이름도 그대로 번역될 수 있음</li>
+          <li>무료 한도가 작음(1인 기준 하루 약 5,000자)</li>
+        </ul>
+        <button class="select-engine-btn" data-engine="mymemory">선택</button>
+      </div>
+    </div>
   </main>
 </div>
 
@@ -186,7 +235,11 @@
   <div class="modal">
     <h2>설정</h2>
     <div class="field">
-      <label for="input-api-key">Google Gemini API 키</label>
+      <button type="button" class="btn btn-secondary" id="btn-open-engine" style="width:100%;">번역 엔진 바꾸기 →</button>
+      <div class="hint" id="engine-current-hint"></div>
+    </div>
+    <div class="field" id="field-api-key">
+      <label for="input-api-key">Google Gemini API 키 (Gemini 엔진 선택 시에만 필요)</label>
       <input type="password" id="input-api-key" placeholder="AIza..." autocomplete="off" />
       <div class="hint">
         <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>에서
@@ -240,6 +293,13 @@ const CACHE_KEY = "lt_cache_v1";
 const API_KEY_KEY = "lt_api_key";
 const MY_NAME_KEY = "lt_my_name";
 const USAGE_KEY = "lt_usage_v1";
+const ENGINE_KEY = "lt_engine";
+const ENGINE_LABELS = { gemini: "Gemini (AI 번역)", mymemory: "MyMemory (빠른 번역)" };
+
+function getEngine() {
+  const stored = localStorage.getItem(ENGINE_KEY);
+  return stored === "mymemory" ? "mymemory" : "gemini";
+}
 
 // ---------- usage tracking (구글이 잔여 할당량을 API로 알려주지 않아, 앱이 자체 카운트로 추정) ----------
 function getPacificDateString() {
@@ -570,6 +630,62 @@ async function translateBatch(originalTexts, contextTexts) {
   return result;
 }
 
+// ---------- MyMemory (전용 번역 API, 빠르지만 문맥/이름 보존 없음) ----------
+// MyMemory는 소스 언어 자동감지를 지원하지 않아, 문자 구성 비율로 대략 추정한다(완벽하지 않음).
+function detectSourceLangForMyMemory(text) {
+  const letters = text.replace(/[^\p{L}]/gu, "") || text;
+  const kana = text.match(/[぀-ヿ]/g);
+  if (kana && kana.length / letters.length >= 0.15) return "ja";
+  const hanja = text.match(/[一-鿿]/g);
+  if (hanja && hanja.length / letters.length >= 0.3) return "zh-CN";
+  return "en";
+}
+
+async function translateMyMemoryOne(text) {
+  const cached = getCached(text);
+  if (cached) return cached;
+
+  if (text.length > 500) {
+    throw new Error("메시지가 너무 깁니다 (MyMemory 500자 제한)");
+  }
+
+  const src = detectSourceLangForMyMemory(text);
+  const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${src}|ko`;
+  const response = await fetchWithRetry(url, { method: "GET" });
+  if (!response.ok) {
+    throw new Error(`MyMemory 요청 실패 (HTTP ${response.status})`);
+  }
+  const json = await response.json();
+  if (Number(json.responseStatus) !== 200 || !json.responseData || !json.responseData.translatedText) {
+    const detail = String(json.responseDetails || (json.responseData && json.responseData.translatedText) || "").slice(0, 150);
+    throw new Error(`MyMemory 번역 실패: ${detail}`);
+  }
+
+  const translated = json.responseData.translatedText;
+  setCached(text, translated);
+  return translated;
+}
+
+// 여러 텍스트를 동시성 제한(기본 5개)을 두고 병렬 번역한다. 완료되는 대로 onEach(index, result, errorMessage)를 호출한다 —
+// 한 항목이 실패해도 나머지는 계속 처리된다(배치 전체를 막지 않음).
+async function translateMyMemoryBatch(texts, onEach) {
+  const CONCURRENCY = 5;
+  let nextIndex = 0;
+  async function worker() {
+    while (nextIndex < texts.length) {
+      const idx = nextIndex++;
+      try {
+        const result = await translateMyMemoryOne(texts[idx]);
+        onEach(idx, result, null);
+      } catch (err) {
+        onEach(idx, null, String(err.message || err));
+      }
+    }
+  }
+  const workers = Array.from({ length: Math.min(CONCURRENCY, texts.length) }, () => worker());
+  await Promise.all(workers);
+}
+
 // ---------- import ----------
 async function handleFileImport(file) {
   const rawText = await readFileSmart(file);
@@ -581,17 +697,19 @@ async function handleFileImport(file) {
 
   // 이미 캐시가 있거나 이미 한국어인 메시지는 API 호출이 필요 없어 사전 안내에서 제외한다.
   const needsApiCall = parsed.filter((p) => !isAlreadyKorean(p.text) && !getCached(p.text));
-  const estimatedBatches = chunkForBatch(needsApiCall, (p) => p.text).length;
-  const remaining = remainingQuota();
-  if (estimatedBatches > 1) {
-    const overLimitNote = estimatedBatches > remaining
-      ? `\n오늘 남은 무료 API 요청은 약 ${remaining}회라 일부는 "번역 실패"로 표시될 수 있고, 태평양시간 자정 리셋 후 다시 시도할 수 있습니다.`
-      : "";
-    const proceed = confirm(
-      `이 파일은 메시지 ${parsed.length}개예요. 여러 메시지를 묶어서 보내 API 요청 약 ${estimatedBatches}회로 번역됩니다.${overLimitNote}\n` +
-      `계속하시겠습니까?`
-    );
-    if (!proceed) return;
+  if (getEngine() === "gemini") {
+    const estimatedBatches = chunkForBatch(needsApiCall, (p) => p.text).length;
+    const remaining = remainingQuota();
+    if (estimatedBatches > 1) {
+      const overLimitNote = estimatedBatches > remaining
+        ? `\n오늘 남은 무료 API 요청은 약 ${remaining}회라 일부는 "번역 실패"로 표시될 수 있고, 태평양시간 자정 리셋 후 다시 시도할 수 있습니다.`
+        : "";
+      const proceed = confirm(
+        `이 파일은 메시지 ${parsed.length}개예요. 여러 메시지를 묶어서 보내 API 요청 약 ${estimatedBatches}회로 번역됩니다.${overLimitNote}\n` +
+        `계속하시겠습니까?`
+      );
+      if (!proceed) return;
+    }
   }
 
   const myName = (localStorage.getItem(MY_NAME_KEY) || "").trim();
@@ -627,41 +745,68 @@ async function handleFileImport(file) {
   renderConversationList();
   openConversation(conversation.id);
 
+  await runTranslationPass(conversation);
+}
+
+// 선택된 엔진에 따라 conversation의 "translating" 상태 메시지들을 번역한다.
+async function runTranslationPass(conversation) {
   const translatable = conversation.messages.filter((m) => m.status === "translating");
-  const batches = chunkForBatch(translatable, (m) => m.originalText);
   const total = translatable.length;
   let done = 0;
 
-  for (const batch of batches) {
+  const updateProgress = () => {
     if (state.currentConversationId === conversation.id) {
-      headerTitleEl.textContent = `번역 중... (${done}/${total})`;
+      headerTitleEl.textContent = total > 0 ? `번역 중... (${done}/${total})` : conversation.title;
     }
     renderChatMessages();
+  };
 
-    const firstIdx = conversation.messages.indexOf(batch[0]);
-    const context = conversation.messages
-      .slice(Math.max(0, firstIdx - CONTEXT_LIMIT), firstIdx)
-      .map((m) => m.originalText);
-
-    try {
-      const translations = await translateBatch(batch.map((m) => m.originalText), context);
-      batch.forEach((m, idx) => {
-        m.translatedText = translations[idx];
-        m.status = "done";
-        setCached(m.originalText, translations[idx]);
-      });
-    } catch (err) {
-      const message = String(err.message || err);
-      batch.forEach((m) => {
+  if (getEngine() === "mymemory") {
+    updateProgress();
+    await translateMyMemoryBatch(translatable.map((m) => m.originalText), (idx, result, errorMessage) => {
+      const m = translatable[idx];
+      if (errorMessage) {
         m.status = "failed";
-        m.error = message;
-      });
-    }
+        m.error = errorMessage;
+      } else {
+        m.translatedText = result;
+        m.status = "done";
+      }
+      done++;
+      saveData();
+      updateProgress();
+    });
+  } else {
+    const batches = chunkForBatch(translatable, (m) => m.originalText);
+    for (const batch of batches) {
+      updateProgress();
 
-    done += batch.length;
-    saveData();
-    renderChatMessages();
+      const firstIdx = conversation.messages.indexOf(batch[0]);
+      const context = conversation.messages
+        .slice(Math.max(0, firstIdx - CONTEXT_LIMIT), firstIdx)
+        .map((m) => m.originalText);
+
+      try {
+        const translations = await translateBatch(batch.map((m) => m.originalText), context);
+        batch.forEach((m, idx) => {
+          m.translatedText = translations[idx];
+          m.status = "done";
+          setCached(m.originalText, translations[idx]);
+        });
+      } catch (err) {
+        const message = String(err.message || err);
+        batch.forEach((m) => {
+          m.status = "failed";
+          m.error = message;
+        });
+      }
+
+      done += batch.length;
+      saveData();
+      updateProgress();
+    }
   }
+
   if (state.currentConversationId === conversation.id) {
     headerTitleEl.textContent = conversation.title;
   }
@@ -677,7 +822,9 @@ async function retranslateMessage(conversationId, messageId) {
   message.skipTranslation = false;
   renderChatMessages();
   try {
-    const translated = await translateText(message.originalText, [], false);
+    const translated = getEngine() === "mymemory"
+      ? await translateMyMemoryOne(message.originalText)
+      : await translateText(message.originalText, [], false);
     message.translatedText = translated;
     message.status = "done";
   } catch (err) {
@@ -691,6 +838,7 @@ async function retranslateMessage(conversationId, messageId) {
 // ---------- rendering ----------
 const homeView = document.getElementById("home-view");
 const chatView = document.getElementById("chat-view");
+const engineView = document.getElementById("engine-view");
 const convListEl = document.getElementById("conv-list");
 const emptyStateEl = document.getElementById("empty-state");
 const chatMessagesEl = document.getElementById("chat-messages");
@@ -812,6 +960,7 @@ function openConversation(id) {
   headerTitleEl.textContent = conversation ? conversation.title : "라인 자동번역";
   homeView.classList.add("hidden");
   chatView.classList.add("active");
+  engineView.classList.remove("active");
   btnBack.style.display = "inline-block";
   btnToggleOriginal.style.display = "inline-block";
   renderChatMessages();
@@ -822,10 +971,35 @@ function goHome() {
   headerTitleEl.textContent = "라인 자동번역";
   homeView.classList.remove("hidden");
   chatView.classList.remove("active");
+  engineView.classList.remove("active");
   btnBack.style.display = "none";
   btnToggleOriginal.style.display = "none";
   renderConversationList();
 }
+
+function renderEngineView() {
+  const current = getEngine();
+  document.querySelectorAll(".engine-card").forEach((card) => {
+    card.classList.toggle("selected", card.dataset.engine === current);
+  });
+}
+
+function openEngineView() {
+  homeView.classList.add("hidden");
+  chatView.classList.remove("active");
+  engineView.classList.add("active");
+  headerTitleEl.textContent = "번역 엔진 선택";
+  btnBack.style.display = "inline-block";
+  btnToggleOriginal.style.display = "none";
+  renderEngineView();
+}
+
+document.querySelectorAll(".select-engine-btn").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    localStorage.setItem(ENGINE_KEY, btn.dataset.engine);
+    renderEngineView();
+  });
+});
 
 // ---------- settings modal ----------
 const settingsBackdrop = document.getElementById("settings-backdrop");
@@ -838,6 +1012,7 @@ function openSettings() {
   inputMyName.value = localStorage.getItem(MY_NAME_KEY) || "";
   saveToast.style.display = "none";
   updateUsageDisplay();
+  document.getElementById("engine-current-hint").textContent = `현재 선택된 엔진: ${ENGINE_LABELS[getEngine()]}`;
   settingsBackdrop.classList.add("active");
 }
 function closeSettings() { settingsBackdrop.classList.remove("active"); }
@@ -851,6 +1026,10 @@ document.getElementById("btn-settings-save").addEventListener("click", () => {
 });
 settingsBackdrop.addEventListener("click", (e) => {
   if (e.target === settingsBackdrop) closeSettings();
+});
+document.getElementById("btn-open-engine").addEventListener("click", () => {
+  closeSettings();
+  openEngineView();
 });
 
 // ---------- import / nav wiring ----------
