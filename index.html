@@ -767,6 +767,12 @@ function renderChatMessages() {
       row2.appendChild(failText);
       row2.appendChild(retryBtn);
       bubble.appendChild(row2);
+      if (message.error) {
+        const errRow = document.createElement("div");
+        errRow.style.cssText = "font-size:11px;color:var(--text-secondary);margin-top:2px;word-break:break-all;";
+        errRow.textContent = message.error;
+        bubble.appendChild(errRow);
+      }
     } else {
       const row2 = document.createElement("div");
       row2.className = "status-row";
