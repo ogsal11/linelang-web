@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>라인 자동번역</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --surface-alt: #eceef1;
+    --text: #1c1c1e;
+    --text-secondary: #6b7280;
+    --accent: #2563eb;
+    --accent-bubble: #dbeafe;
+    --danger: #dc2626;
+    --border: #e5e7eb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0f1115;
+      --surface: #1a1d23;
+      --surface-alt: #23262e;
+      --text: #f2f2f3;
+      --text-secondary: #9aa0aa;
+      --accent: #5b8def;
+      --accent-bubble: #234064;
+      --danger: #f87171;
+      --border: #2c2f38;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    height: 100vh;
+    overflow: hidden;
+  }
+  #app { display: flex; flex-direction: column; height: 100vh; }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .icon-btn {
+    background: none;
+    border: none;
+    font-size: 20px;
+    cursor: pointer;
+    color: var(--text);
+    padding: 6px 8px;
+    line-height: 1;
+  }
+  .header-actions { display: flex; gap: 4px; align-items: center; }
+  main { flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Home / conversation list */
+  #home-view { display: flex; flex-direction: column; height: 100%; }
+  #empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    padding: 32px;
+    text-align: center;
+    gap: 8px;
+  }
+  #empty-state .big { font-size: 40px; }
+  .conv-item {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    background: var(--surface);
+  }
+  .conv-item:active { background: var(--surface-alt); }
+  .conv-title { font-weight: 600; font-size: 15px; }
+  .conv-preview { font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+  /* Chat room */
+  #chat-view { display: none; flex-direction: column; height: 100%; }
+  #chat-view.active { display: flex; }
+  #home-view.hidden { display: none; }
+  #chat-messages { flex: 1; overflow-y: auto; padding: 10px 10px 20px; display: flex; flex-direction: column; gap: 10px; }
+  .bubble-row { display: flex; }
+  .bubble-row.mine { justify-content: flex-end; }
+  .bubble-col { display: flex; flex-direction: column; max-width: 78%; }
+  .bubble-row.mine .bubble-col { align-items: flex-end; }
+  .sender-label { font-size: 11px; color: var(--text-secondary); margin-bottom: 2px; padding: 0 4px; }
+  .bubble {
+    padding: 9px 12px;
+    border-radius: 14px;
+    background: var(--surface-alt);
+    font-size: 14px;
+    line-height: 1.4;
+  }
+  .bubble-row.mine .bubble { background: var(--accent-bubble); }
+  .bubble .original { color: var(--text); }
+  .bubble .translated { font-weight: 600; margin-top: 4px; }
+  .bubble .status-row { display: flex; align-items: center; gap: 6px; margin-top: 4px; font-size: 13px; color: var(--text-secondary); }
+  .bubble .retry-btn {
+    background: none; border: none; color: var(--accent); cursor: pointer; font-size: 13px; padding: 2px 4px;
+  }
+  .bubble .failed { color: var(--danger); }
+  .time-label { font-size: 10px; color: var(--text-secondary); margin-top: 2px; padding: 0 4px; }
+  .spinner {
+    width: 12px; height: 12px; border: 2px solid var(--text-secondary); border-top-color: transparent;
+    border-radius: 50%; animation: spin 0.7s linear infinite; display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Settings modal */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.4);
+    display: none; align-items: flex-end; justify-content: center; z-index: 10;
+  }
+  .modal-backdrop.active { display: flex; }
+  .modal {
+    background: var(--surface); width: 100%; max-width: 480px;
+    border-radius: 16px 16px 0 0; padding: 20px; padding-bottom: max(20px, env(safe-area-inset-bottom));
+  }
+  .modal h2 { margin: 0 0 16px; font-size: 17px; }
+  .field { margin-bottom: 16px; }
+  .field label { display: block; font-size: 13px; color: var(--text-secondary); margin-bottom: 6px; }
+  .field input {
+    width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); font-size: 15px;
+  }
+  .field .hint { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+  .modal-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .btn {
+    flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 15px; font-weight: 600; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: white; }
+  .btn-secondary { background: var(--surface-alt); color: var(--text); }
+  .save-toast { font-size: 13px; color: var(--accent); margin-top: 8px; display: none; }
+
+  #file-input { display: none; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="header-actions">
+      <button class="icon-btn" id="btn-back" style="display:none;">‹</button>
+      <button class="icon-btn" id="btn-import" title="가져오기">📥</button>
+    </div>
+    <h1 id="header-title">라인 자동번역</h1>
+    <div class="header-actions">
+      <button class="icon-btn" id="btn-toggle-original" style="display:none;" title="원문 토글">Aa</button>
+      <button class="icon-btn" id="btn-settings" title="설정">⚙️</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="home-view">
+      <div id="conv-list"></div>
+      <div id="empty-state">
+        <div class="big">💬</div>
+        <div>가져온 대화가 없습니다</div>
+        <div>라인 대화방 &gt; 설정 &gt; 대화내용 내보내기 후,<br />파일에 저장하고 📥 버튼으로 불러오세요.</div>
+      </div>
+    </div>
+    <div id="chat-view">
+      <div id="chat-messages"></div>
+    </div>
+  </main>
+</div>
+
+<input type="file" id="file-input" accept=".txt,text/plain" />
+
+<div class="modal-backdrop" id="settings-backdrop">
+  <div class="modal">
+    <h2>설정</h2>
+    <div class="field">
+      <label for="input-api-key">Anthropic API 키</label>
+      <input type="password" id="input-api-key" placeholder="sk-ant-..." autocomplete="off" />
+      <div class="hint">이 기기의 브라우저에만 저장됩니다 (localStorage). 다른 사람과 공유되는 페이지가 아니어야 안전합니다.</div>
+    </div>
+    <div class="field">
+      <label for="input-my-name">내 라인 표시 이름 (선택)</label>
+      <input type="text" id="input-my-name" placeholder="대화 내 내 이름" autocomplete="off" />
+      <div class="hint">설정하면 이 이름으로 된 메시지가 오른쪽(내 메시지)으로 표시됩니다.</div>
+    </div>
+    <div class="save-toast" id="save-toast">저장되었습니다.</div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="btn-settings-close">닫기</button>
+      <button class="btn btn-primary" id="btn-settings-save">저장</button>
+    </div>
+  </div>
+</div>
+
+<script>
+const SYSTEM_PROMPT = "당신은 채팅 메시지를 자연스러운 한국어로 번역하는 도우미입니다. " +
+  "직전 대화 맥락을 참고해 대명사와 줄임말을 자연스럽게 해석하세요. " +
+  "번역문만 출력하고 설명을 덧붙이지 마세요.";
+const CONTEXT_LIMIT = 2;
+const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+
+const DATA_KEY = "lt_data_v1";
+const CACHE_KEY = "lt_cache_v1";
+const API_KEY_KEY = "lt_api_key";
+const MY_NAME_KEY = "lt_my_name";
+
+// ---------- storage ----------
+function loadData() {
+  try { return JSON.parse(localStorage.getItem(DATA_KEY)) || { conversations: [] }; }
+  catch (e) { return { conversations: [] }; }
+}
+function saveData() { localStorage.setItem(DATA_KEY, JSON.stringify(state.data)); }
+
+function getCached(text) {
+  try {
+    const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
+    return cache[text];
+  } catch (e) { return undefined; }
+}
+function setCached(text, translated) {
+  try {
+    const cache = JSON.parse(localStorage.getItem(CACHE_KEY) || "{}");
+    cache[text] = translated;
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+  } catch (e) { /* ignore quota errors */ }
+}
+
+const state = {
+  data: loadData(),
+  currentConversationId: null,
+  showOriginalOnly: false
+};
+
+// ---------- parser ----------
+function parseLineExport(rawText) {
+  const dateLineRe = /^(\d{4})[.\-/년]\s?(\d{1,2})[.\-/월]\s?(\d{1,2})/;
+  const messageLineRe = /^(\d{1,2}):(\d{2})\t([^\t]+)\t(.+)$/;
+  const results = [];
+  let currentDate = new Date();
+
+  const lines = rawText.split(/\r?\n/);
+  for (const raw of lines) {
+    const line = raw.trim();
+    if (!line) continue;
+
+    const dateMatch = line.match(dateLineRe);
+    if (dateMatch) {
+      const y = Number(dateMatch[1]), m = Number(dateMatch[2]), d = Number(dateMatch[3]);
+      currentDate = new Date(y, m - 1, d);
+      continue;
+    }
+
+    const msgMatch = line.match(messageLineRe);
+    if (msgMatch) {
+      const hh = Number(msgMatch[1]), mm = Number(msgMatch[2]);
+      const sender = msgMatch[3], text = msgMatch[4];
+      const ts = new Date(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate(), hh, mm);
+      results.push({ sender, text, timestamp: ts.getTime() });
+    }
+    // 매칭되지 않는 줄(헤더, 구분선 등)은 건너뛴다.
+  }
+  return results;
+}
+
+// ---------- translation ----------
+function sleep(ms) { return new Promise((r) => setTimeout(r, ms)); }
+
+async function fetchWithRetry(url, options) {
+  let serverAttempt = 0;
+  let networkAttempt = 0;
+  let delayMs = 1000;
+  while (true) {
+    let response;
+    try {
+      response = await fetch(url, options);
+    } catch (err) {
+      if (networkAttempt >= 1) throw err;
+      networkAttempt++;
+      await sleep(delayMs);
+      delayMs *= 2;
+      continue;
+    }
+    if ((response.status === 429 || (response.status >= 500 && response.status < 600)) && serverAttempt < 2) {
+      serverAttempt++;
+      await sleep(delayMs);
+      delayMs *= 2;
+      continue;
+    }
+    return response;
+  }
+}
+
+async function translateText(originalText, contextTexts, useCache) {
+  const apiKey = localStorage.getItem(API_KEY_KEY);
+  if (!apiKey) throw new Error("설정에서 Anthropic API 키를 먼저 입력해주세요.");
+
+  if (useCache && contextTexts.length === 0) {
+    const cached = getCached(originalText);
+    if (cached) return cached;
+  }
+
+  const prompt = contextTexts.length === 0
+    ? `번역 대상: ${originalText}`
+    : `직전 메시지:\n${contextTexts.map((t) => `(상대방) ${t}`).join("\n")}\n\n번역 대상: ${originalText}`;
+
+  const response = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "x-api-key": apiKey,
+      "anthropic-version": "2023-06-01",
+      "anthropic-dangerous-direct-browser-access": "true",
+      "content-type": "application/json"
+    },
+    body: JSON.stringify({
+      model: CLAUDE_MODEL,
+      max_tokens: 300,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: prompt }]
+    })
+  });
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    throw new Error(`번역 요청 실패 (HTTP ${response.status}) ${errBody.slice(0, 150)}`);
+  }
+
+  const json = await response.json();
+  const textBlock = (json.content || []).find((b) => b.type === "text");
+  if (!textBlock || !textBlock.text) throw new Error("번역 결과가 비어 있습니다.");
+
+  if (contextTexts.length === 0) setCached(originalText, textBlock.text);
+  return textBlock.text;
+}
+
+// ---------- import ----------
+async function handleFileImport(file) {
+  const rawText = await file.text();
+  const parsed = parseLineExport(rawText);
+  if (parsed.length === 0) {
+    alert("메시지를 인식하지 못했습니다. 내보내기 파일 형식을 확인해주세요.");
+    return;
+  }
+
+  const myName = (localStorage.getItem(MY_NAME_KEY) || "").trim();
+  const conversation = {
+    id: crypto.randomUUID(),
+    title: file.name.replace(/\.txt$/i, ""),
+    importedAt: Date.now(),
+    messages: parsed.map((p) => ({
+      id: crypto.randomUUID(),
+      sender: p.sender,
+      isMine: !!myName && p.sender === myName,
+      originalText: p.text,
+      translatedText: null,
+      status: "translating",
+      timestamp: p.timestamp
+    }))
+  };
+
+  state.data.conversations.unshift(conversation);
+  saveData();
+  renderConversationList();
+  openConversation(conversation.id);
+
+  const recent = [];
+  for (const message of conversation.messages) {
+    renderChatMessages();
+    try {
+      const translated = await translateText(message.originalText, recent.slice(-CONTEXT_LIMIT), true);
+      message.translatedText = translated;
+      message.status = "done";
+    } catch (err) {
+      message.status = "failed";
+      message.error = String(err.message || err);
+    }
+    recent.push(message.originalText);
+    saveData();
+    renderChatMessages();
+  }
+}
+
+async function retranslateMessage(conversationId, messageId) {
+  const conversation = state.data.conversations.find((c) => c.id === conversationId);
+  if (!conversation) return;
+  const message = conversation.messages.find((m) => m.id === messageId);
+  if (!message) return;
+
+  message.status = "translating";
+  renderChatMessages();
+  try {
+    const translated = await translateText(message.originalText, [], false);
+    message.translatedText = translated;
+    message.status = "done";
+  } catch (err) {
+    message.status = "failed";
+    message.error = String(err.message || err);
+  }
+  saveData();
+  renderChatMessages();
+}
+
+// ---------- rendering ----------
+const homeView = document.getElementById("home-view");
+const chatView = document.getElementById("chat-view");
+const convListEl = document.getElementById("conv-list");
+const emptyStateEl = document.getElementById("empty-state");
+const chatMessagesEl = document.getElementById("chat-messages");
+const headerTitleEl = document.getElementById("header-title");
+const btnBack = document.getElementById("btn-back");
+const btnToggleOriginal = document.getElementById("btn-toggle-original");
+
+function formatTime(ts) {
+  const d = new Date(ts);
+  return d.toLocaleTimeString("ko-KR", { hour: "2-digit", minute: "2-digit" });
+}
+
+function renderConversationList() {
+  convListEl.innerHTML = "";
+  const conversations = state.data.conversations;
+  emptyStateEl.style.display = conversations.length === 0 ? "flex" : "none";
+
+  for (const conv of conversations) {
+    const last = conv.messages[conv.messages.length - 1];
+    const preview = last ? (last.translatedText || last.originalText) : "";
+    const item = document.createElement("div");
+    item.className = "conv-item";
+    item.innerHTML = `<div class="conv-title"></div><div class="conv-preview"></div>`;
+    item.querySelector(".conv-title").textContent = conv.title;
+    item.querySelector(".conv-preview").textContent = `${conv.messages.length}개 메시지 · ${preview}`;
+    item.addEventListener("click", () => openConversation(conv.id));
+    convListEl.appendChild(item);
+  }
+}
+
+function renderChatMessages() {
+  const conversation = state.data.conversations.find((c) => c.id === state.currentConversationId);
+  if (!conversation) return;
+  chatMessagesEl.innerHTML = "";
+
+  for (const message of conversation.messages) {
+    const row = document.createElement("div");
+    row.className = "bubble-row" + (message.isMine ? " mine" : "");
+
+    const col = document.createElement("div");
+    col.className = "bubble-col";
+
+    if (!message.isMine) {
+      const label = document.createElement("div");
+      label.className = "sender-label";
+      label.textContent = message.sender;
+      col.appendChild(label);
+    }
+
+    const bubble = document.createElement("div");
+    bubble.className = "bubble";
+
+    if (!state.showOriginalOnly) {
+      const original = document.createElement("div");
+      original.className = "original";
+      original.textContent = message.originalText;
+      bubble.appendChild(original);
+    }
+
+    if (message.status === "translating") {
+      const row2 = document.createElement("div");
+      row2.className = "status-row";
+      row2.innerHTML = `<span class="spinner"></span><span>번역 중...</span>`;
+      bubble.appendChild(row2);
+    } else if (message.status === "failed") {
+      const row2 = document.createElement("div");
+      row2.className = "status-row";
+      const failText = document.createElement("span");
+      failText.className = "failed";
+      failText.textContent = "번역 실패";
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "retry-btn";
+      retryBtn.textContent = "다시 시도";
+      retryBtn.addEventListener("click", () => retranslateMessage(conversation.id, message.id));
+      row2.appendChild(failText);
+      row2.appendChild(retryBtn);
+      bubble.appendChild(row2);
+    } else {
+      const row2 = document.createElement("div");
+      row2.className = "status-row";
+      const translated = document.createElement("span");
+      translated.className = "translated";
+      translated.textContent = message.translatedText || "";
+      const retryBtn = document.createElement("button");
+      retryBtn.className = "retry-btn";
+      retryBtn.textContent = "↻";
+      retryBtn.title = "재번역";
+      retryBtn.addEventListener("click", () => retranslateMessage(conversation.id, message.id));
+      row2.appendChild(translated);
+      row2.appendChild(retryBtn);
+      bubble.appendChild(row2);
+    }
+
+    col.appendChild(bubble);
+
+    const time = document.createElement("div");
+    time.className = "time-label";
+    time.textContent = formatTime(message.timestamp);
+    col.appendChild(time);
+
+    row.appendChild(col);
+    chatMessagesEl.appendChild(row);
+  }
+
+  chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+}
+
+function openConversation(id) {
+  state.currentConversationId = id;
+  const conversation = state.data.conversations.find((c) => c.id === id);
+  headerTitleEl.textContent = conversation ? conversation.title : "라인 자동번역";
+  homeView.classList.add("hidden");
+  chatView.classList.add("active");
+  btnBack.style.display = "inline-block";
+  btnToggleOriginal.style.display = "inline-block";
+  renderChatMessages();
+}
+
+function goHome() {
+  state.currentConversationId = null;
+  headerTitleEl.textContent = "라인 자동번역";
+  homeView.classList.remove("hidden");
+  chatView.classList.remove("active");
+  btnBack.style.display = "none";
+  btnToggleOriginal.style.display = "none";
+  renderConversationList();
+}
+
+// ---------- settings modal ----------
+const settingsBackdrop = document.getElementById("settings-backdrop");
+const inputApiKey = document.getElementById("input-api-key");
+const inputMyName = document.getElementById("input-my-name");
+const saveToast = document.getElementById("save-toast");
+
+function openSettings() {
+  inputApiKey.value = localStorage.getItem(API_KEY_KEY) || "";
+  inputMyName.value = localStorage.getItem(MY_NAME_KEY) || "";
+  saveToast.style.display = "none";
+  settingsBackdrop.classList.add("active");
+}
+function closeSettings() { settingsBackdrop.classList.remove("active"); }
+
+document.getElementById("btn-settings").addEventListener("click", openSettings);
+document.getElementById("btn-settings-close").addEventListener("click", closeSettings);
+document.getElementById("btn-settings-save").addEventListener("click", () => {
+  localStorage.setItem(API_KEY_KEY, inputApiKey.value.trim());
+  localStorage.setItem(MY_NAME_KEY, inputMyName.value.trim());
+  saveToast.style.display = "block";
+});
+settingsBackdrop.addEventListener("click", (e) => {
+  if (e.target === settingsBackdrop) closeSettings();
+});
+
+// ---------- import / nav wiring ----------
+const fileInput = document.getElementById("file-input");
+document.getElementById("btn-import").addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", () => {
+  if (fileInput.files && fileInput.files[0]) {
+    handleFileImport(fileInput.files[0]);
+  }
+  fileInput.value = "";
+});
+btnBack.addEventListener("click", goHome);
+btnToggleOriginal.addEventListener("click", () => {
+  state.showOriginalOnly = !state.showOriginalOnly;
+  renderChatMessages();
+});
+
+// ---------- init ----------
+renderConversationList();
+</script>
+</body>
+</html>
