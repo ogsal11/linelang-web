@@ -216,7 +216,8 @@ const SYSTEM_PROMPT = "당신은 채팅 메시지를 자연스러운 한국어�
   "번역문만 출력하고 설명을 덧붙이지 마세요.";
 const CONTEXT_LIMIT = 2;
 const GEMINI_MODEL = "gemini-2.5-flash";
-const DAILY_REQUEST_LIMIT = 1500; // Gemini 무료 티어 (Flash 모델) 일일 요청 한도
+const DAILY_REQUEST_LIMIT = 250; // Gemini 무료 티어 (Flash 모델) 일일 요청 한도 (2025-12 축소 반영)
+const MIN_REQUEST_GAP_MS = 6500; // 분당 약 9.2회로 제한 (무료 티어 분당 10회 한도보다 여유있게)
 
 const DATA_KEY = "lt_data_v1";
 const CACHE_KEY = "lt_cache_v1";
@@ -255,6 +256,15 @@ function updateUsageDisplay() {
   const usage = getUsage();
   el.textContent = `오늘 API 사용량: ${usage.count} / ${DAILY_REQUEST_LIMIT} (태평양시간 자정 리셋)`;
   el.classList.toggle("usage-warning", usage.count >= DAILY_REQUEST_LIMIT * 0.8);
+}
+
+// ---------- rate limiting (분당 요청 수를 무료 티어 한도 아래로 강제 조절) ----------
+let nextAllowedRequestTime = 0;
+async function waitForRateLimitSlot() {
+  const now = Date.now();
+  const waitMs = Math.max(0, nextAllowedRequestTime - now);
+  nextAllowedRequestTime = Math.max(now, nextAllowedRequestTime) + MIN_REQUEST_GAP_MS;
+  if (waitMs > 0) await sleep(waitMs);
 }
 
 // ---------- storage ----------
@@ -423,6 +433,7 @@ async function translateText(originalText, contextTexts, useCache) {
     : `직전 메시지:\n${contextTexts.map((t) => `(상대방) ${t}`).join("\n")}\n\n번역 대상: ${originalText}`;
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  await waitForRateLimitSlot();
   incrementUsage();
   const response = await fetchWithRetry(endpoint, {
     method: "POST",
@@ -460,10 +471,13 @@ async function handleFileImport(file) {
   }
 
   const remaining = remainingQuota();
-  if (parsed.length > remaining) {
+  const estimatedMinutes = Math.ceil((parsed.length * MIN_REQUEST_GAP_MS) / 60000);
+  if (parsed.length > 10) {
+    const overLimitNote = parsed.length > remaining
+      ? `\n오늘 남은 무료 API 요청은 약 ${remaining}개라 일부는 "번역 실패"로 표시되고, 태평양시간 자정 리셋 후 다시 시도할 수 있습니다.`
+      : "";
     const proceed = confirm(
-      `이 파일은 메시지 ${parsed.length}개인데, 오늘 남은 무료 API 요청은 약 ${remaining}개입니다.\n` +
-      `한도를 넘는 메시지는 "번역 실패"로 표시되고, 태평양시간 자정 리셋 후 다시 시도 버튼으로 재번역할 수 있습니다.\n` +
+      `이 파일은 메시지 ${parsed.length}개예요. 무료 API 속도 제한 때문에 천천히(약 ${estimatedMinutes}분) 번역됩니다.${overLimitNote}\n` +
       `계속하시겠습니까?`
     );
     if (!proceed) return;
@@ -491,7 +505,12 @@ async function handleFileImport(file) {
   openConversation(conversation.id);
 
   const recent = [];
+  const total = conversation.messages.length;
+  let done = 0;
   for (const message of conversation.messages) {
+    if (state.currentConversationId === conversation.id) {
+      headerTitleEl.textContent = `번역 중... (${done}/${total})`;
+    }
     renderChatMessages();
     try {
       const translated = await translateText(message.originalText, recent.slice(-CONTEXT_LIMIT), true);
@@ -501,9 +520,13 @@ async function handleFileImport(file) {
       message.status = "failed";
       message.error = String(err.message || err);
     }
+    done++;
     recent.push(message.originalText);
     saveData();
     renderChatMessages();
+  }
+  if (state.currentConversationId === conversation.id) {
+    headerTitleEl.textContent = conversation.title;
   }
 }
 
