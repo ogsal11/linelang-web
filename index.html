@@ -219,7 +219,9 @@ const SYSTEM_PROMPT = "당신은 채팅 메시지를 자연스러운 한국어�
 const BATCH_SYSTEM_PROMPT = SYSTEM_PROMPT +
   " 여러 메시지가 번호 순서대로 주어지면, 같은 순서와 개수를 유지한 문자열 배열(JSON)로만 응답하세요.";
 const CONTEXT_LIMIT = 2;
-const GEMINI_MODEL = "gemini-2.5-flash";
+// "-latest"는 구글이 관리하는 별칭으로, 특정 모델이 단종/제한되어도 항상 현재 쓸 수 있는
+// flash 모델을 자동으로 가리킨다 (버전 문자열을 직접 고정하지 않아도 됨).
+const GEMINI_MODEL = "gemini-flash-latest";
 const DAILY_REQUEST_LIMIT = 250; // Gemini 무료 티어 (Flash 모델) 일일 요청 한도 (2025-12 축소 반영)
 const MIN_REQUEST_GAP_MS = 6500; // 분당 약 9.2회로 제한 (무료 티어 분당 10회 한도보다 여유있게)
 
