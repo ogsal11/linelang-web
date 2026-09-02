@@ -8,7 +8,7 @@ Xcode/Mac 없이 쓸 수 있는 순수 클라이언트 웹페이지 버전. 서�
    - 내보내기는 화면에 이미 로드된 대화만 포함한다. 스크롤 안 한 과거 대화는 빠진다.
 2. `index.html`을 아이폰 Safari(또는 아무 브라우저)로 열기
    - 로컬 파일로 열거나, GitHub Pages 등에 올려서 URL로 접속해도 됨
-3. ⚙️ 설정에서 Gemini API 키 입력 — [aistudio.google.com/apikey](https://aistudio.google.com/apikey)에서 구글 계정으로 무료 발급 (Flash 모델 기준 하루 1,500회, 카드 불필요). 브라우저 localStorage에만 저장됨, 다른 사람과 공유되는 배포라면 절대 넣지 말 것.
+3. ⚙️ 설정에서 Gemini API 키 입력 — [aistudio.google.com/apikey](https://aistudio.google.com/apikey)에서 구글 계정으로 무료 발급 (Flash 모델 기준 하루 250회 · 분당 약 10회, 카드 불필요 — 2025-12 이후 축소된 한도). 브라우저 localStorage에만 저장됨, 다른 사람과 공유되는 배포라면 절대 넣지 말 것.
 4. 📥 버튼으로 방금 내보낸 .txt 선택 → 파싱 → 번역 → 채팅방처럼 표시
 
 ## Gemini 무료 티어 관련 참고
