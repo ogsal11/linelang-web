@@ -185,9 +185,13 @@
   <div class="modal">
     <h2>설정</h2>
     <div class="field">
-      <label for="input-api-key">Anthropic API 키</label>
-      <input type="password" id="input-api-key" placeholder="sk-ant-..." autocomplete="off" />
-      <div class="hint">이 기기의 브라우저에만 저장됩니다 (localStorage). 다른 사람과 공유되는 페이지가 아니어야 안전합니다.</div>
+      <label for="input-api-key">Google Gemini API 키</label>
+      <input type="password" id="input-api-key" placeholder="AIza..." autocomplete="off" />
+      <div class="hint">
+        <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a>에서
+        구글 계정으로 무료 발급 (카드 등록 불필요, Flash 모델 기준 하루 1,500회).
+        이 기기의 브라우저에만 저장됩니다 (localStorage). 다른 사람과 공유되는 페이지가 아니어야 안전합니다.
+      </div>
     </div>
     <div class="field">
       <label for="input-my-name">내 라인 표시 이름 (선택)</label>
@@ -207,7 +211,7 @@ const SYSTEM_PROMPT = "당신은 채팅 메시지를 자연스러운 한국어�
   "직전 대화 맥락을 참고해 대명사와 줄임말을 자연스럽게 해석하세요. " +
   "번역문만 출력하고 설명을 덧붙이지 마세요.";
 const CONTEXT_LIMIT = 2;
-const CLAUDE_MODEL = "claude-haiku-4-5-20251001";
+const GEMINI_MODEL = "gemini-2.5-flash";
 
 const DATA_KEY = "lt_data_v1";
 const CACHE_KEY = "lt_cache_v1";
@@ -302,7 +306,7 @@ async function fetchWithRetry(url, options) {
 
 async function translateText(originalText, contextTexts, useCache) {
   const apiKey = localStorage.getItem(API_KEY_KEY);
-  if (!apiKey) throw new Error("설정에서 Anthropic API 키를 먼저 입력해주세요.");
+  if (!apiKey) throw new Error("설정에서 Gemini API 키를 먼저 입력해주세요.");
 
   if (useCache && contextTexts.length === 0) {
     const cached = getCached(originalText);
@@ -313,19 +317,14 @@ async function translateText(originalText, contextTexts, useCache) {
     ? `번역 대상: ${originalText}`
     : `직전 메시지:\n${contextTexts.map((t) => `(상대방) ${t}`).join("\n")}\n\n번역 대상: ${originalText}`;
 
-  const response = await fetchWithRetry("https://api.anthropic.com/v1/messages", {
+  const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const response = await fetchWithRetry(endpoint, {
     method: "POST",
-    headers: {
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true",
-      "content-type": "application/json"
-    },
+    headers: { "content-type": "application/json" },
     body: JSON.stringify({
-      model: CLAUDE_MODEL,
-      max_tokens: 300,
-      system: SYSTEM_PROMPT,
-      messages: [{ role: "user", content: prompt }]
+      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: { maxOutputTokens: 300 }
     })
   });
 
@@ -335,11 +334,14 @@ async function translateText(originalText, contextTexts, useCache) {
   }
 
   const json = await response.json();
-  const textBlock = (json.content || []).find((b) => b.type === "text");
-  if (!textBlock || !textBlock.text) throw new Error("번역 결과가 비어 있습니다.");
+  const parts = json.candidates && json.candidates[0] && json.candidates[0].content
+    ? json.candidates[0].content.parts
+    : null;
+  const text = parts && parts.map((p) => p.text || "").join("").trim();
+  if (!text) throw new Error("번역 결과가 비어 있습니다 (안전 필터에 걸렸을 수 있음).");
 
-  if (contextTexts.length === 0) setCached(originalText, textBlock.text);
-  return textBlock.text;
+  if (contextTexts.length === 0) setCached(originalText, text);
+  return text;
 }
 
 // ---------- import ----------
