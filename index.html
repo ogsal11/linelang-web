@@ -491,7 +491,7 @@ async function translateText(originalText, contextTexts, useCache) {
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
       contents: [{ role: "user", parts: [{ text: prompt }] }],
-      generationConfig: { maxOutputTokens: 300 }
+      generationConfig: { maxOutputTokens: 300, thinkingConfig: { thinkingBudget: 0 } }
     })
   });
 
@@ -539,7 +539,8 @@ async function translateBatch(originalTexts, contextTexts) {
       generationConfig: {
         maxOutputTokens,
         responseMimeType: "application/json",
-        responseSchema: { type: "ARRAY", items: { type: "STRING" } }
+        responseSchema: { type: "ARRAY", items: { type: "STRING" } },
+        thinkingConfig: { thinkingBudget: 0 }
       }
     })
   });
