@@ -139,6 +139,7 @@
     background: var(--bg); color: var(--text); font-size: 15px;
   }
   .field .hint { font-size: 12px; color: var(--text-secondary); margin-top: 6px; }
+  .field .hint.usage-warning { color: var(--danger); font-weight: 600; }
   .modal-actions { display: flex; gap: 8px; margin-top: 8px; }
   .btn {
     flex: 1; padding: 12px; border-radius: 10px; border: none; font-size: 15px; font-weight: 600; cursor: pointer;
@@ -198,6 +199,9 @@
       <input type="text" id="input-my-name" placeholder="대화 내 내 이름" autocomplete="off" />
       <div class="hint">설정하면 이 이름으로 된 메시지가 오른쪽(내 메시지)으로 표시됩니다.</div>
     </div>
+    <div class="field">
+      <div id="usage-display" class="hint" style="margin-top:0;"></div>
+    </div>
     <div class="save-toast" id="save-toast">저장되었습니다.</div>
     <div class="modal-actions">
       <button class="btn btn-secondary" id="btn-settings-close">닫기</button>
@@ -212,11 +216,46 @@ const SYSTEM_PROMPT = "당신은 채팅 메시지를 자연스러운 한국어�
   "번역문만 출력하고 설명을 덧붙이지 마세요.";
 const CONTEXT_LIMIT = 2;
 const GEMINI_MODEL = "gemini-2.5-flash";
+const DAILY_REQUEST_LIMIT = 1500; // Gemini 무료 티어 (Flash 모델) 일일 요청 한도
 
 const DATA_KEY = "lt_data_v1";
 const CACHE_KEY = "lt_cache_v1";
 const API_KEY_KEY = "lt_api_key";
 const MY_NAME_KEY = "lt_my_name";
+const USAGE_KEY = "lt_usage_v1";
+
+// ---------- usage tracking (구글이 잔여 할당량을 API로 알려주지 않아, 앱이 자체 카운트로 추정) ----------
+function getPacificDateString() {
+  // 무료 티어 일일 한도는 태평양 시간(PT) 자정 기준으로 리셋된다.
+  return new Date().toLocaleDateString("en-CA", { timeZone: "America/Los_Angeles" });
+}
+function getUsage() {
+  const today = getPacificDateString();
+  try {
+    const stored = JSON.parse(localStorage.getItem(USAGE_KEY) || "{}");
+    if (stored.date !== today) return { date: today, count: 0 };
+    return stored;
+  } catch (e) {
+    return { date: today, count: 0 };
+  }
+}
+function incrementUsage() {
+  const usage = getUsage();
+  usage.count += 1;
+  localStorage.setItem(USAGE_KEY, JSON.stringify(usage));
+  updateUsageDisplay();
+  return usage.count;
+}
+function remainingQuota() {
+  return Math.max(0, DAILY_REQUEST_LIMIT - getUsage().count);
+}
+function updateUsageDisplay() {
+  const el = document.getElementById("usage-display");
+  if (!el) return;
+  const usage = getUsage();
+  el.textContent = `오늘 API 사용량: ${usage.count} / ${DAILY_REQUEST_LIMIT} (태평양시간 자정 리셋)`;
+  el.classList.toggle("usage-warning", usage.count >= DAILY_REQUEST_LIMIT * 0.8);
+}
 
 // ---------- storage ----------
 function loadData() {
@@ -318,6 +357,7 @@ async function translateText(originalText, contextTexts, useCache) {
     : `직전 메시지:\n${contextTexts.map((t) => `(상대방) ${t}`).join("\n")}\n\n번역 대상: ${originalText}`;
 
   const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  incrementUsage();
   const response = await fetchWithRetry(endpoint, {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -351,6 +391,16 @@ async function handleFileImport(file) {
   if (parsed.length === 0) {
     alert("메시지를 인식하지 못했습니다. 내보내기 파일 형식을 확인해주세요.");
     return;
+  }
+
+  const remaining = remainingQuota();
+  if (parsed.length > remaining) {
+    const proceed = confirm(
+      `이 파일은 메시지 ${parsed.length}개인데, 오늘 남은 무료 API 요청은 약 ${remaining}개입니다.\n` +
+      `한도를 넘는 메시지는 "번역 실패"로 표시되고, 태평양시간 자정 리셋 후 다시 시도 버튼으로 재번역할 수 있습니다.\n` +
+      `계속하시겠습니까?`
+    );
+    if (!proceed) return;
   }
 
   const myName = (localStorage.getItem(MY_NAME_KEY) || "").trim();
@@ -552,6 +602,7 @@ function openSettings() {
   inputApiKey.value = localStorage.getItem(API_KEY_KEY) || "";
   inputMyName.value = localStorage.getItem(MY_NAME_KEY) || "";
   saveToast.style.display = "none";
+  updateUsageDisplay();
   settingsBackdrop.classList.add("active");
 }
 function closeSettings() { settingsBackdrop.classList.remove("active"); }
@@ -584,6 +635,7 @@ btnToggleOriginal.addEventListener("click", () => {
 
 // ---------- init ----------
 renderConversationList();
+updateUsageDisplay();
 </script>
 </body>
 </html>
