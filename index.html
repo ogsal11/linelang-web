@@ -106,6 +106,8 @@
     border-radius: 50%; animation: spin 0.8s linear infinite;
   }
   #translate-overlay .progress-text { font-size: 15px; font-weight: 600; }
+  #translate-overlay .ad-note { font-size: 12px; color: var(--text-secondary); text-align: center; padding: 0 24px; }
+  #translate-overlay .ad-slot { min-height: 100px; width: 100%; max-width: 320px; }
 
   #btn-scroll-top {
     position: absolute; right: 16px; bottom: 20px; z-index: 4;
@@ -218,6 +220,13 @@
       <div id="translate-overlay">
         <div class="spinner-lg"></div>
         <div class="progress-text" id="translate-progress-text">번역 중... 0%</div>
+        <div class="ad-note">번역이 진행되는 동안 광고가 표시될 수 있어요. 광고가 나와도 번역은 계속 진행됩니다.</div>
+        <div class="ad-slot">
+          <ins class="adsbygoogle" style="display:block; width:100%; height:100%;"
+               data-ad-client="ca-pub-3973058659241605"
+               data-ad-slot="__TRANSLATE_OVERLAY_AD_SLOT__"
+               data-ad-format="auto" data-full-width-responsive="true"></ins>
+        </div>
       </div>
     </div>
     <div id="engine-view">
@@ -856,9 +865,16 @@ async function runTranslationPass(conversation) {
 // ---------- translate overlay / scroll-to-top ----------
 const translateOverlayEl = document.getElementById("translate-overlay");
 const translateProgressTextEl = document.getElementById("translate-progress-text");
+let translateOverlayAdRequested = false;
 function showTranslateOverlay(pct) {
   translateProgressTextEl.textContent = `번역 중... ${pct}%`;
   translateOverlayEl.classList.add("active");
+  if (!translateOverlayAdRequested) {
+    translateOverlayAdRequested = true;
+    try {
+      (window.adsbygoogle = window.adsbygoogle || []).push({});
+    } catch (e) { /* 광고 스크립트가 아직 안 붙었거나 slot 설정 전이면 조용히 무시 */ }
+  }
 }
 function hideTranslateOverlay() {
   translateOverlayEl.classList.remove("active");
